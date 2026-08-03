@@ -1,5 +1,6 @@
 ﻿using LibreHardwareMonitor.Hardware;
 using PcMonitorServer.Models;
+using System.Diagnostics;
 
 namespace PcMonitorServer.Services;
 
@@ -9,6 +10,7 @@ namespace PcMonitorServer.Services;
 public sealed class HardwareMonitor : IDisposable
 {
     private readonly Computer _computer;
+    private readonly UpdateVisitor _updateVisitor;
     private bool _disposed;
 
     public HardwareMonitor()
@@ -24,6 +26,8 @@ public sealed class HardwareMonitor : IDisposable
             IsControllerEnabled = true,
         };
 
+        _updateVisitor = new UpdateVisitor();
+
         _computer.Open();
     }
 
@@ -31,32 +35,104 @@ public sealed class HardwareMonitor : IDisposable
     {
         ThrowIfDisposed();
 
+        _computer.Accept(_updateVisitor);
+
         float? cpuUsage = null;
         float? cpuTemperature = null;
         float? memoryUsage = null;
 
         foreach (IHardware hardware in _computer.Hardware)
         {
-            hardware.Update();
-            UpdateSubHardware(hardware);
-
-            if (hardware.HardwareType == HardwareType.cpu)
+            // Find cpu sensors and set cpu related variables
+            if (hardware.HardwareType == HardwareType.Cpu)
             {
                 cpuUsage ??= FindSensorValue(
-                    
-                    )
+                    hardware,
+                    SensorType.Load,
+                    sensor => sensor.Name.Contains("CPU Total", StringComparison.OrdinalIgnoreCase)
+                );
+
+                cpuTemperature ??= FindSensorValue(
+                    hardware,
+                    SensorType.Temperature,
+                    sensor => sensor.Name.Contains("CPU Package", StringComparison.OrdinalIgnoreCase)
+                );
             }
 
+            // Find mem sensors and set memory related variables
+            if (hardware.HardwareType == HardwareType.Memory)
+            {
+                if (hardware.Name.Equals("Total Memory", StringComparison.OrdinalIgnoreCase))
+                {
+                    memoryUsage ??= FindSensorValue(
+                        hardware,
+                        SensorType.Load,
+                        sensor => sensor.Name.Equals("Memory", StringComparison.OrdinalIgnoreCase)
+                    );
+                }
+            }
+
+            // Find storage sensors and set storage related variables
+            if (hardware.HardwareType == HardwareType.Storage)
+            {
+
+            }
         }
+
+        //DEBUG:
+        DebugAvailableHardware();
+        DebugAvailableCpuSensors();
+        DebugAvailableStorageSensors();
+
+        return new SystemStatus
+        {
+            CpuUsage = cpuUsage,
+            CpuTemperature = cpuTemperature,
+            MemoryUsage = memoryUsage,
+            Timestamp = DateTimeOffset.UtcNow,
+        };
     }
 
-    private static void UpdateSubHardware(IHardware hardware)
+    public SystemInfo GetSystemInfo()
     {
-        foreach (IHardware subHardware in hardware.SubHardware)
+        ThrowIfDisposed();
+
+        string? cpuName = null;
+        string? moboName = null;
+        var gpuNames = new List<string>();
+        var storageNames = new List<string>();
+
+        foreach (IHardware hardware in _computer.Hardware)
         {
-            subHardware.Update();
-            UpdateSubHardware(subHardware);
+            switch (hardware.HardwareType)
+            {
+                case HardwareType.Cpu:
+                    cpuName ??= hardware.Name;
+                    break;
+
+                case HardwareType.Motherboard:
+                    moboName ??= hardware.Name;
+                    break;
+
+                case HardwareType.GpuAmd:
+                case HardwareType.GpuNvidia:
+                case HardwareType.GpuIntel:
+                    gpuNames.Add(hardware.Name);
+                    break;
+
+                case HardwareType.Storage:
+                    storageNames.Add(hardware.Name);
+                    break;
+
+            }
         }
+
+        return new SystemInfo
+        {
+            CpuName = cpuName,
+            // just changed models, need refactoring
+        }
+
     }
 
     private static float? FindSensorValue(
@@ -99,6 +175,71 @@ public sealed class HardwareMonitor : IDisposable
         }
         _computer.Close();
         _disposed = true;
+    }
+
+    // Debug print
+    private void DebugAvailableHardware()
+    {
+        foreach (IHardware hardware in this._computer.Hardware)
+        {
+            hardware.Update();
+
+            Debug.WriteLine(
+                $"Hardware: {hardware.Name} | Type: {hardware.HardwareType}");
+
+            if (hardware.HardwareType == HardwareType.Memory)
+            {
+                Debug.WriteLine("Memory Sensors:");
+
+                foreach (ISensor sensor in hardware.Sensors)
+                {
+                    Debug.WriteLine(
+                        $"{sensor.Name} | {sensor.SensorType} | {sensor.Value}");
+                }
+            }
+        }
+    }
+
+    private void DebugAvailableCpuSensors()
+    {
+        foreach (IHardware hardware in _computer.Hardware)
+        {
+            if (hardware.HardwareType != HardwareType.Cpu)
+            {
+                continue;
+            }
+
+            Debug.WriteLine($"CPU hardware: {hardware.Name}");
+            PrintSensorsRecursively(hardware);
+        }
+    }
+
+    private void DebugAvailableStorageSensors()
+    {
+        foreach (IHardware hardware in this._computer.Hardware)
+        {
+            if (hardware.HardwareType != HardwareType.Storage)
+            {
+                continue;
+            }
+            Debug.WriteLine($"Storage: {hardware.Name}");
+            PrintSensorsRecursively(hardware);
+        }
+    }
+
+    private static void PrintSensorsRecursively(IHardware hardware)
+    {
+        foreach (ISensor sensor in hardware.Sensors)
+        {
+            Debug.WriteLine(
+                $"{hardware.Name} | {sensor.Name} | " +
+                $"{sensor.SensorType} | {sensor.Value}");
+        }
+
+        foreach (IHardware subHardware in hardware.SubHardware)
+        {
+            PrintSensorsRecursively(subHardware);
+        }
     }
 }
 
