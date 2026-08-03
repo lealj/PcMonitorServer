@@ -1,0 +1,1 @@
+PC Monitor Server is an ASP.NET Core (.NET 9) Web API that exposes hardware metrics such as CPU usage, temperatures, memory utilization, GPU information, and storage statistics over HTTP. It is intended to be consumed by a separate client application (such as an Android app).
