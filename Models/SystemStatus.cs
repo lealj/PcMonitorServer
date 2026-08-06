@@ -8,7 +8,7 @@
 
         public IReadOnlyList<GpuStatus> GpuStatuses { get; init; } = [];
         public IReadOnlyList<StorageStatus> StorageStatuses { get; init; } = [];
-        public DateTimeOffset Timestamp { get; init; }
+        public required DateTimeOffset Timestamp { get; init; }
     }
 
     public sealed class GpuStatus
