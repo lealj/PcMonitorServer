@@ -40,6 +40,8 @@ public sealed class HardwareMonitor : IDisposable
         float? cpuUsage = null;
         float? cpuTemperature = null;
         float? memoryUsage = null;
+        var gpuStatuses = new List<GpuStatus>();
+        var storageStatuses = new List<StorageStatus>();
 
         foreach (IHardware hardware in _computer.Hardware)
         {
@@ -49,13 +51,35 @@ public sealed class HardwareMonitor : IDisposable
                 cpuUsage ??= FindSensorValue(
                     hardware,
                     SensorType.Load,
-                    sensor => sensor.Name.Contains("CPU Total", StringComparison.OrdinalIgnoreCase)
+                    sensor => sensor.Name.Equals("CPU Total", StringComparison.OrdinalIgnoreCase)
                 );
 
                 cpuTemperature ??= FindSensorValue(
                     hardware,
                     SensorType.Temperature,
-                    sensor => sensor.Name.Contains("CPU Package", StringComparison.OrdinalIgnoreCase)
+                    sensor => sensor.Name.Equals("CPU Package", StringComparison.OrdinalIgnoreCase)
+                );
+            }
+
+            if (hardware.HardwareType == HardwareType.GpuNvidia ||
+                hardware.HardwareType == HardwareType.GpuIntel ||
+                hardware.HardwareType == HardwareType.GpuAmd)
+            {
+                string _id = hardware.Identifier.ToString();
+                float? _usage = FindOverallGpuUsage(hardware);
+                float? _temperature = FindSensorValue(
+                    hardware,
+                    SensorType.Temperature,
+                    sensor => sensor.Name.Equals("GPU Core", StringComparison.OrdinalIgnoreCase)
+                );
+
+                gpuStatuses.Add(
+                    new GpuStatus
+                    {
+                        Id = _id,
+                        Usage = _usage,
+                        Temperature = _temperature,
+                    }
                 );
             }
 
@@ -75,21 +99,56 @@ public sealed class HardwareMonitor : IDisposable
             // Find storage sensors and set storage related variables
             if (hardware.HardwareType == HardwareType.Storage)
             {
+                string _id = hardware.Identifier.ToString();
+                // Ssd uses composite, hdd uses temperature
+                float? _temperature =
+                    FindSensorValue(
+                        hardware,
+                        SensorType.Temperature,
+                        sensor => sensor.Name.Equals("Composite Temperature", StringComparison.OrdinalIgnoreCase)
+                    ) ?? FindSensorValue(
+                        hardware,
+                        SensorType.Temperature,
+                        sensor => sensor.Name.Equals("Temperature", StringComparison.OrdinalIgnoreCase)
+                    );
+                float? _lifePercentage = FindSensorValue(
+                    hardware, SensorType.Level,
+                    sensor => sensor.Name.Equals("Life", StringComparison.OrdinalIgnoreCase)
+                );
+                float? _usedSpace = FindSensorValue(
+                    hardware, SensorType.Load,
+                    sensor => sensor.Name.Equals("Used Space", StringComparison.OrdinalIgnoreCase)
+                );
+                float? _freeSpace = FindSensorValue(
+                    hardware, SensorType.Data,
+                    sensor => sensor.Name.Equals("Total Space", StringComparison.OrdinalIgnoreCase)
+                );
 
+                storageStatuses.Add(new StorageStatus
+                {
+                    Id = _id,
+                    Temperature = _temperature,
+                    LifePercentage = _lifePercentage,
+                    UsedSpace = _usedSpace,
+                    FreeSpace = _freeSpace
+                });
             }
         }
 
-        //DEBUG:
-        DebugAvailableHardware();
-        DebugAvailableCpuSensors();
+        /******* DEBUG: ********/
+        //DebugAvailableHardware();
+        //DebugAvailableCpuSensors();
         DebugAvailableStorageSensors();
+        //DebugAvailableGpuSensors();
 
         return new SystemStatus
         {
             CpuUsage = cpuUsage,
             CpuTemperature = cpuTemperature,
             MemoryUsage = memoryUsage,
-            Timestamp = DateTimeOffset.UtcNow,
+            GpuStatuses = gpuStatuses,
+            StorageStatuses = storageStatuses,
+            Timestamp = DateTimeOffset.UtcNow
         };
     }
 
@@ -99,8 +158,8 @@ public sealed class HardwareMonitor : IDisposable
 
         string? cpuName = null;
         string? moboName = null;
-        var gpuNames = new List<string>();
-        var storageNames = new List<string>();
+        var gpuNames = new List<GpuInfo>();
+        var storageNames = new List<StorageInfo>();
 
         foreach (IHardware hardware in _computer.Hardware)
         {
@@ -117,11 +176,11 @@ public sealed class HardwareMonitor : IDisposable
                 case HardwareType.GpuAmd:
                 case HardwareType.GpuNvidia:
                 case HardwareType.GpuIntel:
-                    gpuNames.Add(hardware.Name);
+                    gpuNames.Add(new GpuInfo { Id = hardware.Identifier.ToString(), Name = hardware.Name });
                     break;
 
                 case HardwareType.Storage:
-                    storageNames.Add(hardware.Name);
+                    storageNames.Add(new StorageInfo { Id = hardware.Identifier.ToString(), Name = hardware.Name });
                     break;
 
             }
@@ -130,9 +189,10 @@ public sealed class HardwareMonitor : IDisposable
         return new SystemInfo
         {
             CpuName = cpuName,
-            // just changed models, need refactoring
-        }
-
+            MoboName = moboName,
+            GpuNames = gpuNames,
+            StorageNames = storageNames
+        };
     }
 
     private static float? FindSensorValue(
@@ -162,6 +222,36 @@ public sealed class HardwareMonitor : IDisposable
         return null;
     }
 
+    /// <summary>
+    /// Finds the highest utilization reported by the GPU's Direct3D (D3D) engines. Windows Task Manager reports
+    /// overall GPU usage using the busiest D3D engine rather than the GPU core load, so this provides a value
+    /// that closely matches the percentage displayed in Task Manager.
+    /// </summary>
+    /// <param name="hardware">
+    /// The GPU hardware whose D3D engine sensors will be examined.
+    /// </param>
+    /// <returns>
+    /// The highest D3D engine utilization percentage, or <c>null</c> if no D3D engine load sensors are available.
+    /// </returns>
+    private static float? FindOverallGpuUsage(IHardware hardware)
+    {
+        float? highestUsage = null;
+        foreach (ISensor sensor in hardware.Sensors)
+        {
+            bool isD3dEngine =
+                sensor.SensorType == SensorType.Load &&
+                sensor.Name.StartsWith("D3D ", StringComparison.OrdinalIgnoreCase);
+
+            if (!isD3dEngine || sensor.Value is null)
+            {
+                continue;
+            }
+
+            highestUsage = highestUsage is null ? sensor.Value : Math.Max(highestUsage.Value, sensor.Value.Value);
+        }
+        return highestUsage;
+    }
+
     private void ThrowIfDisposed()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -180,7 +270,7 @@ public sealed class HardwareMonitor : IDisposable
     // Debug print
     private void DebugAvailableHardware()
     {
-        foreach (IHardware hardware in this._computer.Hardware)
+        foreach (IHardware hardware in _computer.Hardware)
         {
             hardware.Update();
 
@@ -216,13 +306,29 @@ public sealed class HardwareMonitor : IDisposable
 
     private void DebugAvailableStorageSensors()
     {
-        foreach (IHardware hardware in this._computer.Hardware)
+        foreach (IHardware hardware in _computer.Hardware)
         {
             if (hardware.HardwareType != HardwareType.Storage)
             {
                 continue;
             }
             Debug.WriteLine($"Storage: {hardware.Name}");
+            PrintSensorsRecursively(hardware);
+        }
+    }
+
+    private void DebugAvailableGpuSensors()
+    {
+        foreach (IHardware hardware in _computer.Hardware)
+        {
+            if (hardware.HardwareType != HardwareType.GpuNvidia &&
+                hardware.HardwareType != HardwareType.GpuAmd &&
+                hardware.HardwareType != HardwareType.GpuIntel)
+            {
+                continue;
+            }
+
+            Debug.WriteLine($"GPU: {hardware.Name}");
             PrintSensorsRecursively(hardware);
         }
     }

@@ -2,9 +2,9 @@
 {
     public class SystemInfo
     {
-        public string? CpuName {  get; init; }
+        public string? CpuName { get; init; }
         public string? MoboName { get; init; }
-        public IReadOnlyList<GpuInfo> GpuNames { get; init; } = []
+        public IReadOnlyList<GpuInfo> GpuNames { get; init; } = [];
         public IReadOnlyList<StorageInfo> StorageNames { get; init; } = [];
     }
 
